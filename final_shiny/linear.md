@@ -1,5 +1,5 @@
 ---
-title: "Linear"
+title: "final project file"
 author: "Lucia"
 date: "5/30/2019"
 output: 
