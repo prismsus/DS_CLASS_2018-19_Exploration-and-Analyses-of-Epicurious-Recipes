@@ -1,0 +1,445 @@
+---
+title: "Exploration and Analyses of Epicurious Recipes"
+author: Christina & Lucia
+output:
+  html_document:
+    keep_md: yes
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = TRUE, warning = FALSE, message = FALSE, cache = TRUE)
+library(tidyverse)
+library(DT)
+library(scales)
+library(rattle)
+library(rpart)
+library(caret)
+library(pROC)
+library(kableExtra)
+
+set.seed(1)
+```
+
+## Overview
+
+In this project we explore a dataset of recipes on the website Epicurious using various machine learning techniques. 
+
+We developed several mini-projects:
+
+* Recipe recommender: a simple recommendation system that helps users find similar recipes to a user-inputted dish based on ingredients
+
+* Clustering: clustering of ingredients based on recipes to find common or interesting ingredient combinations
+
+* Rating: we attempted to predict ratings from ingredients
+
+* Calories: a model that predicts calories based on ingredients
+
+* Summer: a model that tags (classifies) recipes as "summer"-related based on ingredients
+
+See the below sections for more details
+
+*Note: code has been hidden in the document for ease of reading. Check Rmd file for the code*
+
+## Data
+
+### Original Data
+
+The entire dataset can be found on [Kaggle](https://www.kaggle.com/hugodarwood/epirecipes).
+
+There are 20,052 recipes, each with 680 attributes. Here is a sample of the data (only 5 rows and 10 columns are chosen for convenience):
+
+```{r}
+epi_r <- read_csv("~/DS_CLASS_2018-19_Christina/Semester2/final_project/epicurious-recipes-with-rating-and-nutrition/epi_r.csv")
+
+epi_r[1:5, 1:10] %>%
+  kable() %>%
+  kable_styling()
+```
+
+Most attributes are one-hot encoded and show the presence of ingredients or tags (e.g. "sandwich", "summer")
+
+### Data Processing
+
+Several steps were done:
+
+* Duplicate recipes are removed
+
+* Rows with NA values are removed
+
+* Columns of "bon appetit" were removed (it indicates the recipe came from the website bon appetit, which does not seem to be informative for our purposes)
+
+* Columns with no variation at all are identified
+
+* Variables calories/fat/sodium/protein were scaled into the range 0 to 1 so as to match the other one-hot encoded variables
+
+```{r}
+epi_na <- epi_r %>%
+  distinct() %>%
+  na.omit() %>%
+  .[, -c(64, 65)] # removes columns bon appetit
+
+epi_na_scaled <- epi_na %>%
+  mutate(rating = rescale(rating, to = c(0, 1)),
+         calories = rescale(calories, to = c(0, 1)),
+         protein = rescale(protein, to = c(0, 1)),
+         fat = rescale(fat, to = c(0, 1)),
+         sodium = rescale(sodium, to = c(0, 1))
+  )
+
+nzv_col <- epi_na_scaled %>%
+  select(-title) %>%
+  colSums() %>%
+  as.data.frame() %>%
+  add_rownames("feature") %>%
+  mutate(index = c(2:678)) %>%
+  filter(`.` <= 1) %>%
+  .$index %>%
+  unlist()
+
+epi_na_scaled_nzv <- epi_na_scaled[, -nzv_col]
+
+```
+
+After cleaning, there are 14446 recipes
+
+
+## Recipe Recommender
+
+### Goal
+
+In this part, we aimed to build a simple recommender system that recommends similar recipes from a user-inputted recipe.
+
+To achieve this, we calculated a distance matrix for all recipes and used the distance as a measure of similarity.
+
+The system is implemented in RStudio
+
+### Calculations
+
+Since all variables are within 0~1, a standard distance matrix was calculated for all recipes using Euclidean distance. Only ingredients and tags were used since variables like calorie depend on portions and other things besides culinary similarity (also we have supplied a calorie filter)
+
+```{r, eval = FALSE}
+result_na_scaled_dist <- epi_na_scaled %>% 
+  select(-title, -calories, -rating, -protein, -sodium, -fat) %>% as.matrix() %>% dist()
+
+# result was stored locally
+result_na_scaled_dist %>%
+  saveRDS("result_dist_new.rds")
+```
+
+### R Shiny App
+
+The system is relatively simple: the user inputs the recipe name (must be exact, but the user can look up names in the About page, where the full table is displayed), and the app looks up in the distance matrix, and outputs a ranked table of recipes ordered by distance to the input recipe.
+
+Several filter options are available: the user can require the presence of ingredients they are interested in, set minimum rating thresholds, or filter by a calorie range
+
+### Example
+
+When we input "Lentil, Apple, and Turkey Wrap", the top 3 recommended dishes are:
+
+* "Pasta with Lentil Bolognese": lentil is the common ingredient
+
+* "Avocado Blts on Toasted Oatmeal Bread": both are sandwich/bread and are savory dishes with a sweat component (apple/oatmeal)
+
+* "Turkey Meat Loaf with Sun-Dried Tomatoes": turkey is the common ingredient, and both involve bread
+
+When we input "Korean Marinated Beef", the top recommended dishes are:
+
+* Mahimahi with Brown-Sugar Soy Glaze: very Asian dish
+
+* Sauteed Skirt Steak: beef is the common star
+
+* Orange-Flavored Beef and Snow Pea Stir-Fry with Noodles: beef is shared, and also is Asian-style
+
+In general, the recommendations do seem to make some sense.
+
+For more examples, try the app
+
+## Clustering
+
+### Goal
+
+In this part, we aimed to cluster ingredients/tags together using recipes. This data can be used to find common combinations of ingredients that people may not be aware of, and inspire them with interesting combinations
+
+### Calculations
+
+We will be clustering 674 ingredients/tags using 14424 recipes (trianing examples)
+
+We chose to use hierarchial clustering due to its flexibility in the number of clusters (different number of clusterings may have different uses, so we chose to leave the option open for the users)
+
+Again, a standard Euclidean distance matrix was used
+
+```{r, eval = FALSE}
+# distance matrix
+temp <- epi_na_scaled[, -c(1, 2, 3, 4, 5, 6)] %>%
+  t()
+dist.t <- dist(temp)
+saveRDS(dist.t, "dist_t.rds") # stored locally
+```
+
+Three methods are used, which the user is able to choose: complete, average, or Ward's. The method chosen can influence the overall dendrogram structure and specific results
+
+
+
+```{r}
+dist_t <- readRDS("final_shiny/dist_t.rds")
+
+hc.complete <- hclust(dist_t, method = "complete")
+hc.wd <- hclust(dist_t, method = "ward.D2")
+hc.average <- hclust(dist_t, method = "average")
+```
+
+### Visualization
+
+Here are the overall dendrogram structures:
+
+```{r}
+hc.complete <- hclust(dist_t, method = "complete")
+hc.wd <- hclust(dist_t, method = "ward.D2")
+hc.average <- hclust(dist_t, method = "average")
+
+plot(hc.complete, labels = FALSE)
+plot(hc.average, labels = FALSE)
+plot(hc.wd, labels = FALSE)
+```
+
+All of them show some level of extended, trailing clusters, especially for the "average" method. Using Ward's appears to give a slightly more balanced dendrogram
+
+### Example
+
+The number of clusters is an important factor. Here we will use 20:
+
+```{r}
+n <- 20
+tr <- cutree(hc.complete, n) %>% as.data.frame() %>% rownames_to_column("features")
+      names(tr)[2] = "cluster"
+
+table(cutree(hc.complete, n))
+```
+
+As you can see, the majority of the attributes were assigned to one group.
+
+Some smaller groups:
+
+* The healthy group:
+
+```{r}
+tr %>% filter(cluster == 3)
+```
+
++ these healthy options are grouped together (interestingly no sugar is grouped with vegan - seems like healthy dishes tend to follow these trends together, but note that gluten-free, vegetarian and others are not grouped here)
+
+* dessert & kidney friendly, interestingly, are grouped together:
+
+```{r}
+tr %>% filter(cluster == 4)
+```
+
+
+For more exploration, use the App
+
+
+## Ratings
+
+See linear.md
+
+## Calories
+
+### Goal
+
+In this part we aimed to predict calories based on ingredients. This can be used for recipes that do not report any calorie level, so users can have a sense of the calorie content. Although there are many available products to calculate calorie, our model also gives an example on whether if through purely looking at recipe data, a computer can recognize important ingredients/features related to low/high calorie diet and successfully combine the information for acucrate prediction; and to what extent does presence of ingredients (since our data does not contain quantity) can inform us on calorie
+
+### Data Processing
+
+Here is the five point summary of the raw calorie data:
+
+```{r}
+summary(epi_na$calories)
+
+
+temp <- epi_na %>%
+  filter(calories < 10000, calories > 0) %>%
+  mutate(calories_f = ifelse(calories > 500, "high", ifelse(calories < 250, "low", "mid"))) %>%
+  mutate(calories_f = as.factor(calories_f)) %>%
+  select(-calories, -protein, -fat, -sodium, -title)
+```
+
+The median value is around 346. However, the max is 30 million, an unrealistic number likely due to previous data processing errors. Therefore, we filtered out recipes with unreasonable calorie values of over 10,000
+
+To simplify the task, we divided the calories into 3 classes of roughly equal sizes: 
+
+* low: < 250
+
+* mid: 250~500
+
+* high: 500
+
+Variables fat, sodium, and protein are removed since usually if calorie data is missing, these will be missing as well
+
+```{r}
+temp <- epi_na %>%
+  filter(calories < 10000, calories > 0) %>%
+  mutate(calories_f = ifelse(calories > 500, "high", ifelse(calories < 250, "low", "mid"))) %>%
+  mutate(calories_f = as.factor(calories_f)) %>%
+  select(-calories, -protein, -fat, -sodium, -title)
+
+names(temp) <- make.names(names(temp)) # proper column names are made
+
+```
+
+
+### Data Partition
+
+We partitioned the data to 75% train (10819 recipes) and 25% test (3605 recipes). 
+
+```{r}
+inTraining <- createDataPartition(temp$calories_f, p = .75, list = FALSE)
+
+train_calories <- temp[inTraining, ]
+test_calories <- temp[-inTraining, ]
+```
+
+
+### Model
+
+We chose to use decision trees because they are more suitable for one-hot encoded variables and are better at handling a large number of variables (also they are easy to interpret so we can see exactly how the model decides).
+
+Due to time limit, we chose to train single-tree models as implemented by rpart, which is significantly faster than other more complex models
+
+
+### Training
+
+```{r, eval = FALSE}
+rpart.calories <- rpart(calories_f ~., data = train_calories)
+saveRDS(rpart.calories, "rpart_calories.rds") # result stored locally
+```
+
+
+```{r}
+rpart.calories <- readRDS("final_shiny/rpart_calories.rds")
+```
+
+
+### Result
+
+Here is the model's performance on the training set:
+
+```{r}
+confusionMatrix(predict(rpart.calories, train_calories, type = "class"), train_calories$calories_f)
+```
+
+(It is quite similar to performance on test set, and so they are analyzed together below)
+
+Here is the model performance on the test set:
+
+```{r}
+confusionMatrix(predict(rpart.calories, test_calories, type = "class"), test_calories$calories_f)
+```
+
+p-value is small, kappa = 0.29, and accuracy = 0.52: the model is not very accurate in its predictions, but it certainly performs better than random guessing. Its accuracy is high for predicting high & mid, suggesting that ingredients (or at least the ingredients chosen in the tree) are decent indicators for calorie content on the two ends, but are less useful for distinguishing mid-calorie level. The statistics are quite similar to the training performance, indicating that there is no overfitting but underfitting is an issue, so future improvement we can try more complex models, acquire more predictors, or engineer better features. (It does make some sense, though, that our accuracy may not be high, because portion is a major factor on calorie content, and we do not have that data)
+
+
+Here is a visualization of the tree:
+
+```{r}
+fancyRpartPlot(rpart.calories, sub = "")
+```
+
+The tree is quite simple (for example, it will categorize any vegan dish as "low calorie"), but it shows that the computer has been able to recognize important indicators of high/low calorie meals, for example "vegan" or "dinner", without any actual understanding of the words or food. The variable importance shows similar "understanding" of the model on key features influencing calorie content
+
+```{r}
+varImp(rpart.calories) %>%
+      rownames_to_column("feature") %>%
+      arrange(desc(Overall)) %>%
+      filter(Overall > 0) %>%
+      select(feature, importance = Overall) %>%
+      mutate(importance = round(importance))
+```
+
+## Summer
+
+### Goal
+
+In this part, we aimed to predict whether if a dish is summer-themed using ingredients. This can be used to automatically tag recipes online as "summer" and identify ingredients/tags most closely related to summer dishes
+
+### Data Processing
+
+We removed winter, fall, and spring as predictors since it is less useful to predict for a dish has been tagged with a season
+
+Similar to before, the data is divided to 75% train and 25% test.
+
+```{r}
+epi_na_scaled_nzv_nonzero<-read.csv("final_shiny/epi_na_scaled_nzv_nonzero.csv")
+
+df <- epi_na_scaled_nzv_nonzero%>%
+  select(-winter, -fall, -spring, -title) %>%
+  mutate(summer = as.factor(summer))
+
+names(df) <- make.names(names(df))
+
+inTraining <- createDataPartition(df$summer, p = .75, list = FALSE)
+
+train_summer <- df[inTraining, ]
+test_summer<- df[-inTraining, ]
+```
+
+### Model
+
+Similar to reasons stated before, we chose to use single decision tree as implemented by rpart
+
+### Training
+
+```{r, eval = FALSE}
+rpart.test <- rpart(summer ~., data = train_summer)
+saveRDS(rpart.test,"rpart.test.rds") # save result to local
+```
+
+### Results
+
+Here is the model's performance on the training set:
+
+```{r}
+rpart.test<-readRDS("final_shiny/rpart.test.rds")
+
+confusionMatrix(predict(rpart.test, train_summer, type = "class"), train_summer$summer)
+```
+
+(Again it is quite similar to performance on test set, and so they are analyzed together below)
+
+Here is the model performance on the test set:
+
+```{r}
+confusionMatrix(predict(rpart.test, test_summer, type = "class"), test_summer$summer)
+```
+
+```{r}
+roc(predictor=predict(rpart.test, test_summer, type = "prob")[,2],response = test_summer$summer)%>%plot()
+```
+
+
+p-value is small, kappa = 0.33, accuracy = 0.82, ROC curve is above the random guess: the model is far from perfect, but it certainly performs better than random guessing. 
+The statistics are quite similar to the training performance, indicating that there is no overfitting but underfitting is an issue, so for future improvement we can try more complex models or engineer or transform features (for example using word2vec).
+
+
+Here is a visualization of the tree:
+
+```{r}
+fancyRpartPlot(rpart.test, sub = "")
+```
+
+The tree is again pretty simple, but it does identify some telling indicators (for example barbeque, or fourth of july). The variable importance shows similar "understanding" of the model on key features influencing whether if a dish is summer-related or not (for example identifying peach, lime, cucumber, and blueberry as some summer-themed ingredients)
+
+```{r}
+varImp(rpart.test) %>%
+  add_rownames() %>%
+  arrange(desc(Overall))%>%
+  head(13)%>%
+  select(feature=rowname, importance = Overall) %>%
+      mutate(importance = round(importance))
+```
+
+
+
